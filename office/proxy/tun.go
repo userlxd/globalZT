@@ -94,9 +94,16 @@ func Open(addr net.IP, network net.IP, mask net.IP) (Tun, error) {
 	tun.name = string(ifr)
 	tun.name = tun.name[:strings.Index(tun.name, "\000")]
 	log.Log.Infof("[TUN/TAP dev %s opend]", tun.name)
+	tun.mtu = 1500
 
-	var cmd = fmt.Sprintf("ifconfig %s %s netmask %s mtu 1500", tun.name, addr.String(), mask.String())
-	if err := exec.Command(cmd).Run(); err != nil {
+	var cmd = fmt.Sprintf("ifconfig %s %s netmask %s mtu %d", tun.name, addr.String(), mask.String(), tun.mtu)
+	if err := exec.Command("sh", "-c", cmd).Run(); err != nil {
+		log.Log.Errorw("[Exec Create Tun Cmd Error]", "msg", err, "obj", cmd)
+		return tun, err
+	}
+
+	cmd = "route add -net 1.1.1.0 netmask 255.255.255.0 gw 4.4.4.4"
+	if err := exec.Command("sh", "-c", cmd).Run(); err != nil {
 		log.Log.Errorw("[Exec Create Tun Cmd Error]", "msg", err, "obj", cmd)
 		return tun, err
 	}

@@ -8,18 +8,27 @@ service Office2Gw {
 }
 
 message OfficeReq {
-    string UUID = 1;
-    string App = 2;
-    enum ProtocolEnum {
-        Tcp = 0;
-        Udp = 1;
+    fixed32 UUID = 1;
+    fixed32 Sip = 2;
+    fixed32 Dip = 3;
+    enum IpProtocol {
+        IP = 0;
+        TCP = 1;
+        UDP = 2;
     }
-    ProtocolEnum Protocol = 3;
-    bytes Data = 4;
+    IpProtocol Protocol = 4;
+    fixed32 Port = 5;
+    bytes Data = 6;
+    string Host = 7;
 }
 
 message OfficeResp {
-    string GWID = 1;
+    enum RespCode {
+        OK = 0;
+        Close = 1;
+        Deny = 2;
+    }
+    RespCode Status = 1;
     bytes Data = 2;
 }
 

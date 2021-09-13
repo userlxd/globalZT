@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"globalZT/tools/log"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"google.golang.org/grpc"
 )
@@ -17,25 +19,30 @@ var priorityMap = map[uint]uint{
 }
 
 type OfficeApp struct {
-	App         string
-	Concurrency uint
-	stream      Office2Gw_DataClient
-	ReqChan     chan *OfficeReq
-	RespChan    chan *OfficeResp
-	Office      *Office
+	context.Context
+	cancle      context.CancelFunc   //
+	Keepalive   *time.Timer          //
+	Code        string               // Code
+	Concurrency uint                 // QOS
+	stream      Office2Gw_DataClient // grpc stream
+	Stream      Office2Gw_DataClient // grpc stream
+	ReqChan     chan *OfficeReq      // req chan
+	Office      *Office              // office
 }
 
 type Office struct {
-	UUID   string
-	active uint32
-	conn   *grpc.ClientConn
-	client Office2GwClient
+	sync.RWMutex                       // lock
+	UUID         string                // device UUID
+	active       uint32                // active code
+	conn         *grpc.ClientConn      // grpc conn
+	client       Office2GwClient       // grpc client
+	Apps         map[string]*OfficeApp // app conn pool
 }
 
-func CreateOfficeTunnel(UUID string) (Office, error) {
+func CreateOfficeTunnel(UUID string) (*Office, error) {
 
 	var err error
-	var office = Office{UUID: UUID}
+	var office = &Office{UUID: UUID}
 	var host = "gw.globalzt.com:31580" // todo 使用resolve解决gw loadblance
 
 	conn, err := grpc.Dial(host, grpc.WithInsecure())
@@ -51,7 +58,27 @@ func CreateOfficeTunnel(UUID string) (Office, error) {
 	return office, nil
 }
 
-func (o *Office) CreateOfficeApp(ctx context.Context) (*OfficeApp, error) {
+func (o *Office) GetApp(code string) (*OfficeApp, bool) {
+	var new = false
+
+	o.RLock()
+	app, ok := o.Apps[code]
+	o.RUnlock()
+	if !ok {
+		var err error
+		app, err = o.initApp(code)
+		if err != nil {
+			return app, new
+		}
+		new = true
+		o.Lock()
+		o.Apps[code] = app
+		o.Unlock()
+	}
+	return app, new
+}
+
+func (o *Office) initApp(code string) (*OfficeApp, error) {
 
 	if atomic.LoadUint32(&o.active) == 0 {
 		return nil, errors.New("out of service")
@@ -59,47 +86,26 @@ func (o *Office) CreateOfficeApp(ctx context.Context) (*OfficeApp, error) {
 
 	var err error
 	var oa = &OfficeApp{
-		Office: o,
+		Code:      code,
+		Office:    o,
+		Keepalive: time.NewTimer(time.Second * 5),
 	}
 
-	oa.stream, err = o.client.Data(ctx)
+	oa.stream, err = o.client.Data(context.Background())
 	if err != nil {
 		log.Log.Errorw("[New Office App Grpc Stream Error]", "msg", err, "obj", o.conn.Target())
 		return oa, err
 	}
 
+	oa.ReqChan = make(chan *OfficeReq, 1)
+
 	return oa, nil
 }
 
-func (oa *OfficeApp) SetApp(app string, priority uint) {
-	oa.App = app
-	oa.ReqChan = make(chan *OfficeReq, priorityMap[priority])
-	oa.RespChan = make(chan *OfficeResp, priorityMap[priority])
-}
+func (oa *OfficeApp) Stop() {
 
-func (oa *OfficeApp) DataRun(cancle context.CancelFunc) {
-
-	go func() {
-		for {
-			resp, err := oa.stream.Recv()
-			if err != nil {
-				log.Log.Errorw("[Recv Office App Resp Error]", "msg", err, "obj", oa.App)
-				cancle()
-				return
-			}
-			oa.RespChan <- resp
-		}
-	}()
-
-	for {
-		select {
-		case req := <-oa.ReqChan:
-			req.UUID = oa.Office.UUID
-			if err := oa.stream.Send(req); err != nil {
-				log.Log.Errorw("[Send Office App Req Error]", "msg", err, "obj", oa.App)
-				cancle()
-				return
-			}
-		}
-	}
+	oa.Office.Lock()
+	delete(oa.Office.Apps, oa.Code)
+	oa.Office.Unlock()
+	oa.cancle()
 }
