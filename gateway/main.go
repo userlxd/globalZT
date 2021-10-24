@@ -7,6 +7,7 @@ import (
 
 func main() {
 	log.Log.Info("start")
+	tunnel := tunnel.NewGwTunnel()
 	tunnel.Run()
 	defer log.Log.Info("quit")
 }

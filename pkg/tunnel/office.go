@@ -18,7 +18,7 @@ var priorityMap = map[uint]uint{
 	3: 1000,
 }
 
-type OfficeApp struct {
+type App struct {
 	context.Context
 	cancle      context.CancelFunc   //
 	Keepalive   *time.Timer          //
@@ -32,20 +32,20 @@ type OfficeApp struct {
 type Office struct {
 	sync.RWMutex // lock
 	host         string
-	UUID         string                // device UUID
-	active       uint32                // active code
-	conn         *grpc.ClientConn      // grpc conn
-	client       Office2GwClient       // grpc client
-	Apps         map[string]*OfficeApp // app conn pool
+	UUID         uint32           // device UUID
+	active       uint32           // active code
+	conn         *grpc.ClientConn // grpc conn
+	client       Office2GwClient  // grpc client
+	Apps         map[string]*App  // app conn pool
 }
 
-func CreateOfficeTunnel(UUID string) (*Office, error) {
+func NewOfficeTunnel(UUID uint32) (*Office, error) {
 
 	var err error
 	var office = &Office{
 		UUID: UUID,
 		host: "gw.globalzt.com:31580", // todo 使用resolve解决gw loadblance
-		Apps: map[string]*OfficeApp{},
+		Apps: map[string]*App{},
 	}
 
 	conn, err := grpc.Dial(office.host, grpc.WithInsecure())
@@ -65,7 +65,7 @@ func (o *Office) CloseConn() {
 	o.conn.Close()
 }
 
-func (o *Office) GetApp(code string) (*OfficeApp, bool) {
+func (o *Office) GetApp(code string) (*App, bool) {
 	var new = false
 
 	o.RLock()
@@ -85,17 +85,17 @@ func (o *Office) GetApp(code string) (*OfficeApp, bool) {
 	return app, new
 }
 
-func (o *Office) initApp(code string) (*OfficeApp, error) {
+func (o *Office) initApp(code string) (*App, error) {
 
 	if atomic.LoadUint32(&o.active) == 0 {
 		return nil, errors.New("out of service")
 	}
 
 	var err error
-	var oa = &OfficeApp{
+	var oa = &App{
 		Code:      code,
 		Office:    o,
-		Keepalive: time.NewTimer(time.Second * 5),
+		Keepalive: time.NewTimer(time.Second * 500),
 	}
 
 	oa.Stream, err = o.client.Data(context.Background())
@@ -109,7 +109,7 @@ func (o *Office) initApp(code string) (*OfficeApp, error) {
 	return oa, nil
 }
 
-func (oa *OfficeApp) Stop() {
+func (oa *App) Stop() {
 
 	oa.Office.Lock()
 	delete(oa.Office.Apps, oa.Code)

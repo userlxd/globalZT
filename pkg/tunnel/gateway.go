@@ -8,27 +8,27 @@ import (
 	"google.golang.org/grpc/peer"
 )
 
-var GW Gateway
-
 type Gateway struct {
 	listener net.Listener
 	server   *grpc.Server
 }
 
-func Run() {
-	var err error
-	var GW = &Gateway{}
+func NewGwTunnel() *Gateway {
+	return &Gateway{}
+}
 
+func (g *Gateway) Run() {
+	var err error
 	addr := "0.0.0.0:31580"
-	GW.listener, err = net.Listen("tcp", addr)
+	g.listener, err = net.Listen("tcp", addr)
 	if err != nil {
 		log.Log.Errorw("[New Gateway Litener]", "msg", err, "obj", addr)
 		return
 	}
 
-	GW.server = grpc.NewServer()
-	RegisterOffice2GwServer(GW.server, GW)
-	GW.server.Serve(GW.listener)
+	g.server = grpc.NewServer()
+	RegisterOffice2GwServer(g.server, g)
+	g.server.Serve(g.listener)
 }
 
 func (g *Gateway) Data(server Office2Gw_DataServer) error {
@@ -48,7 +48,7 @@ func (g *Gateway) Data(server Office2Gw_DataServer) error {
 			return err
 		}
 
-		log.Log.Infof("uuid:%d", req.GetUUID())
+		log.Log.Infof("uuid:%d data:[%s]", req.GetUUID(), string(req.Data))
 	}
 }
 

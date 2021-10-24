@@ -4,6 +4,7 @@ import (
 	"context"
 	"globalZT/pkg/network"
 	"globalZT/pkg/tunnel"
+	"globalZT/pkg/tuntap"
 	"globalZT/tools/log"
 	"io"
 	"net"
@@ -11,98 +12,115 @@ import (
 )
 
 type Proxy struct {
-	UUID        string
-	offcie2Gw   *tunnel.Office
-	tun         Tun
+	UUID        uint32
+	Cancle      context.CancelFunc
+	o2Gw        *tunnel.Office
+	tun         tuntap.Tun
 	readBuffer  chan []byte
 	writeBuffer chan []byte
+	apps        chan *tunnel.App
 }
 
-func (p *Proxy) Run(cancle context.CancelFunc) {
+func NewProxy(uuid uint32) *Proxy {
+	return &Proxy{
+		UUID:        uuid,
+		readBuffer:  make(chan []byte, 1024),
+		writeBuffer: make(chan []byte, 1024),
+		apps:        make(chan *tunnel.App, 1024),
+	}
+}
+
+func (p *Proxy) Run() {
 	var err error
 
-	p.offcie2Gw, err = tunnel.CreateOfficeTunnel(p.UUID)
+	p.o2Gw, err = tunnel.NewOfficeTunnel(p.UUID)
 	if err != nil {
-		cancle()
+		p.Cancle()
 		return
 	}
-	defer p.offcie2Gw.CloseConn()
+	defer p.o2Gw.CloseConn()
 
-	p.tun, err = Open(net.IPv4(4, 4, 4, 4), net.IPv4(0, 0, 0, 0), net.IPv4(255, 255, 255, 0))
+	p.tun, err = tuntap.Open(net.IPv4(4, 4, 4, 4), net.IPv4(0, 0, 0, 0), net.IPv4(255, 255, 255, 0))
 	if err != nil {
-		cancle()
+		p.Cancle()
 		return
 	}
-
-	p.readBuffer = make(chan []byte, 1024)
-	p.writeBuffer = make(chan []byte, 1024)
-	apps := make(chan *tunnel.OfficeApp, 1024)
 
 	// Read from tun
-	go func() {
-		if err := p.tun.Read(p.readBuffer); err != nil {
-			log.Log.Errorw("[Read Tun]", "msg", err, "obj", "")
-			cancle()
-			return
-		}
-	}()
+	go p.TunRead()
 
-	// Write to tunnel
-	go func() {
-		for {
-			select {
-			case data := <-p.readBuffer:
-				code, req := network.Parse(data)
-				app, new := p.offcie2Gw.GetApp(code)
-				if new {
-					log.Log.Info(code, " [add to channel]")
-					apps <- app
-				}
-				app.ReqChan <- req
-			}
-		}
-	}()
+	// Locate to app
+	go p.AppLocate()
 
 	for {
 		select {
-		case app := <-apps:
-			log.Log.Info(app.Code, "[got from channel]")
+		case app := <-p.apps:
 			// Read from tunnel
-			go func(a *tunnel.OfficeApp) {
-				for {
-					resp, err := a.Stream.Recv()
-					if err != nil {
-						if err == io.EOF {
-							log.Log.Infof("%s exit by server quit", app.Code)
-						} else {
-							log.Log.Errorw("[Grpc Recv]", "msg", err, "obj", app.Code)
-						}
-						a.Stop()
-						break
-					}
-					p.writeBuffer <- resp.Data
-				}
-			}(app)
-
+			go p.TunnelRead(app)
 			// Write to tunnel
-			go func(a *tunnel.OfficeApp) {
-				log.Log.Info(a.Code, " [write chan]")
-				for {
-					select {
-					case <-a.Keepalive.C:
-						log.Log.Infof("%s exit by client quit", app.Code)
-						a.Stop()
-					case req := <-a.ReqChan:
-						a.Stream.Send(req)
-						a.Keepalive.Reset(time.Second * 5)
-					}
-				}
-			}(app)
+			go p.TunnelWrite(app)
 		}
 	}
 }
 
 // tun read -> readBuffer
-// readBuffer -> oa send
-// oa receive -> writeBuffer
+func (p *Proxy) TunRead() {
+	if err := p.tun.Read(p.readBuffer); err != nil {
+		log.Log.Errorw("[Read Tun]", "msg", err, "obj", "")
+		p.Cancle()
+		return
+	}
+}
+
 // writeBuffer -> tun write
+func (p *Proxy) TunWrite() {
+
+}
+
+// oa receive -> writeBuffer
+func (p *Proxy) TunnelRead(app *tunnel.App) {
+	for {
+		resp, err := app.Stream.Recv()
+		if err != nil {
+			if err == io.EOF {
+				log.Log.Info(app.Code, "[EOF]")
+			} else {
+				log.Log.Errorw("[Grpc Recv]", "msg", err, "obj", app.Code)
+			}
+			app.Stop()
+			break
+		}
+		p.writeBuffer <- resp.Data
+	}
+}
+
+// readBuffer -> oa send
+func (p *Proxy) TunnelWrite(app *tunnel.App) {
+	for {
+		select {
+		case <-app.Keepalive.C:
+			log.Log.Info(app.Code, "[timeout]")
+			app.Stop()
+		case req := <-app.ReqChan:
+			log.Log.Info(app.Code, "[write chan]")
+			req.UUID = p.UUID
+			app.Stream.Send(req)
+			app.Keepalive.Reset(time.Second * 500)
+		}
+	}
+}
+
+func (p *Proxy) AppLocate() {
+	for {
+		select {
+		case data := <-p.readBuffer:
+			code, req := network.Parse(data)
+			app, new := p.o2Gw.GetApp(code)
+			if new {
+				log.Log.Info(code, "[new app]")
+				p.apps <- app
+			}
+			app.ReqChan <- req
+		}
+	}
+}

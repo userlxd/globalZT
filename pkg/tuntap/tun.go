@@ -1,4 +1,4 @@
-package proxy
+package tuntap
 
 import (
 	"errors"

@@ -7,24 +7,27 @@ import (
 
 var office Office
 
+// 1.web todo
+// 2.proxy now
 type Office struct {
-	UUID  string
-	proxy proxy.Proxy
+	UUID  uint32
+	proxy *proxy.Proxy
 }
 
 func init() {
-	uuid := "123"
+	var uuid uint32 = 123
 	office = Office{
-		UUID: uuid,
-		proxy: proxy.Proxy{
-			UUID: uuid,
-		},
+		UUID:  uuid,
+		proxy: proxy.NewProxy(uuid),
 	}
 }
 
 func Run() {
 
 	ctx, cancle := context.WithCancel(context.Background())
-	office.proxy.Run(cancle)
+
+	office.proxy.Cancle = cancle
+	office.proxy.Run()
+
 	<-ctx.Done()
 }
