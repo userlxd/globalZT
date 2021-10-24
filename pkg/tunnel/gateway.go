@@ -48,7 +48,7 @@ func (g *Gateway) Data(server Office2Gw_DataServer) error {
 			return err
 		}
 
-		log.Log.Infof("uuid:%s", req.GetUUID())
+		log.Log.Infof("uuid:%d", req.GetUUID())
 	}
 }
 

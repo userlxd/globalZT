@@ -24,14 +24,14 @@ type OfficeApp struct {
 	Keepalive   *time.Timer          //
 	Code        string               // Code
 	Concurrency uint                 // QOS
-	stream      Office2Gw_DataClient // grpc stream
 	Stream      Office2Gw_DataClient // grpc stream
 	ReqChan     chan *OfficeReq      // req chan
 	Office      *Office              // office
 }
 
 type Office struct {
-	sync.RWMutex                       // lock
+	sync.RWMutex // lock
+	host         string
 	UUID         string                // device UUID
 	active       uint32                // active code
 	conn         *grpc.ClientConn      // grpc conn
@@ -42,20 +42,27 @@ type Office struct {
 func CreateOfficeTunnel(UUID string) (*Office, error) {
 
 	var err error
-	var office = &Office{UUID: UUID}
-	var host = "gw.globalzt.com:31580" // todo 使用resolve解决gw loadblance
+	var office = &Office{
+		UUID: UUID,
+		host: "gw.globalzt.com:31580", // todo 使用resolve解决gw loadblance
+		Apps: map[string]*OfficeApp{},
+	}
 
-	conn, err := grpc.Dial(host, grpc.WithInsecure())
+	conn, err := grpc.Dial(office.host, grpc.WithInsecure())
 	if err != nil {
-		log.Log.Error("[New Office App Grpc Conn Error]", "msg", err, "obj", host)
+		log.Log.Error("[New Office App Grpc Conn Error]", "msg", err, "obj", office.host)
 		return office, err
 	}
-	defer conn.Close()
 
+	office.conn = conn
 	office.client = NewOffice2GwClient(conn)
 
 	atomic.CompareAndSwapUint32(&office.active, 0, 1)
 	return office, nil
+}
+
+func (o *Office) CloseConn() {
+	o.conn.Close()
 }
 
 func (o *Office) GetApp(code string) (*OfficeApp, bool) {
@@ -91,9 +98,9 @@ func (o *Office) initApp(code string) (*OfficeApp, error) {
 		Keepalive: time.NewTimer(time.Second * 5),
 	}
 
-	oa.stream, err = o.client.Data(context.Background())
+	oa.Stream, err = o.client.Data(context.Background())
 	if err != nil {
-		log.Log.Errorw("[New Office App Grpc Stream Error]", "msg", err, "obj", o.conn.Target())
+		log.Log.Errorw("[New Office App Grpc Stream Error]", "msg", err, "obj", o.host)
 		return oa, err
 	}
 

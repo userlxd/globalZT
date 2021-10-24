@@ -26,6 +26,7 @@ func (p *Proxy) Run(cancle context.CancelFunc) {
 		cancle()
 		return
 	}
+	defer p.offcie2Gw.CloseConn()
 
 	p.tun, err = Open(net.IPv4(4, 4, 4, 4), net.IPv4(0, 0, 0, 0), net.IPv4(255, 255, 255, 0))
 	if err != nil {
@@ -35,7 +36,7 @@ func (p *Proxy) Run(cancle context.CancelFunc) {
 
 	p.readBuffer = make(chan []byte, 1024)
 	p.writeBuffer = make(chan []byte, 1024)
-	apps := make(chan tunnel.OfficeApp, 1024)
+	apps := make(chan *tunnel.OfficeApp, 1024)
 
 	// Read from tun
 	go func() {
@@ -52,10 +53,10 @@ func (p *Proxy) Run(cancle context.CancelFunc) {
 			select {
 			case data := <-p.readBuffer:
 				code, req := network.Parse(data)
-				log.Log.Info(code)
 				app, new := p.offcie2Gw.GetApp(code)
 				if new {
-					apps <- *app
+					log.Log.Info(code, " [add to channel]")
+					apps <- app
 				}
 				app.ReqChan <- req
 			}
@@ -65,8 +66,9 @@ func (p *Proxy) Run(cancle context.CancelFunc) {
 	for {
 		select {
 		case app := <-apps:
+			log.Log.Info(app.Code, "[got from channel]")
 			// Read from tunnel
-			go func(a tunnel.OfficeApp) {
+			go func(a *tunnel.OfficeApp) {
 				for {
 					resp, err := a.Stream.Recv()
 					if err != nil {
@@ -83,12 +85,10 @@ func (p *Proxy) Run(cancle context.CancelFunc) {
 			}(app)
 
 			// Write to tunnel
-			go func(a tunnel.OfficeApp) {
-				defer a.Stream.CloseSend()
+			go func(a *tunnel.OfficeApp) {
+				log.Log.Info(a.Code, " [write chan]")
 				for {
 					select {
-					case <-a.Done():
-						break
 					case <-a.Keepalive.C:
 						log.Log.Infof("%s exit by client quit", app.Code)
 						a.Stop()

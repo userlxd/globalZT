@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"errors"
 	"fmt"
 	"globalZT/tools/log"
 	"net"
@@ -79,6 +80,7 @@ func Open(addr net.IP, network net.IP, mask net.IP) (Tun, error) {
 	tun.fd, err = os.OpenFile(dev, os.O_RDWR, 0)
 	if err != nil {
 		log.Log.Errorw("[Load Tun File Error]", "msg", err, "obj", dev)
+		return tun, err
 	}
 
 	ifr := make([]byte, 18)
@@ -88,7 +90,8 @@ func Open(addr net.IP, network net.IP, mask net.IP) (Tun, error) {
 		uintptr(tun.fd.Fd()), uintptr(TUNSETIFF),
 		uintptr(unsafe.Pointer(&ifr[0])))
 	if errno != 0 {
-		log.Log.Errorw("[Syscall Tun Error]", "msg", err, "obj", dev)
+		log.Log.Errorw("[Syscall Tun Error]", "msg", errno, "obj", dev)
+		return tun, errors.New("syscall tun error")
 	}
 
 	tun.name = string(ifr)
