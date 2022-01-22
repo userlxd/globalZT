@@ -1,0 +1,14 @@
+syntax = "proto3";
+package tunnel;
+option go_package = "../tunnel"; 
+
+message Req {
+    fixed32 UUID = 1;
+    fixed32 Sip = 2;
+    fixed32 Dip = 3;
+    bytes Data = 4;
+}
+
+message Resp {
+    bytes Data = 1;
+}

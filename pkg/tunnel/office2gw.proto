@@ -1,0 +1,51 @@
+syntax = "proto3";
+package tunnel;
+option go_package = "../tunnel"; 
+
+service Office2gw {
+    rpc Data(stream In) returns (stream Out) {}
+    rpc Control(stream Report) returns(stream Issue) {}
+}
+
+message In {
+    fixed32 UUID = 1;
+    fixed32 Sip = 2;
+    fixed32 Dip = 3;
+    fixed32 Port = 4;
+    enum IpProtocol {
+        IP = 0;
+        TCP = 1;
+        UDP = 2;
+    }
+    IpProtocol Protocol = 5;
+    string Host = 6;
+    string Jwt = 7;
+    bytes Data = 8;
+}
+
+message Out {
+    bytes Data = 1;
+}
+
+message Report {
+    string UUID = 1;
+    enum ReportEnum {
+        Test = 0;
+        Full = 1;
+        Bye = 2;
+    }
+    ReportEnum Report = 2;
+    int64 TimeStamp = 3;
+    bytes Payload = 4;
+}
+
+message Issue {
+    string UUID = 1;
+    enum BackPress {
+        Free = 0;
+        Press = 1;
+        Finnal = 2;
+    }
+    BackPress Flag = 2;
+    bytes Payload = 3;
+}

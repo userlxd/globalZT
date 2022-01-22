@@ -5,122 +5,76 @@ import (
 	"globalZT/pkg/network"
 	"globalZT/pkg/tunnel"
 	"globalZT/pkg/tuntap"
-	"globalZT/tools/log"
-	"io"
+	"globalZT/tools/config"
 	"net"
-	"time"
+
+	"go.uber.org/atomic"
 )
 
 type Proxy struct {
-	UUID        uint32
-	Cancle      context.CancelFunc
-	o2Gw        *tunnel.Office
-	tun         tuntap.Tun
-	readBuffer  chan []byte
-	writeBuffer chan []byte
-	apps        chan *tunnel.App
+	cancle context.CancelFunc // proxy cancle
+	UUID   uint32             // device UUID
+	Active *atomic.Bool       // connect status
+
+	// grpc tunnel
+	o2Gw *tunnel.Office2Gw // grpc tunnel
+
+	// Tun
+	tun         tuntap.Tun  // tun tap interface
+	tunReadBuf  chan []byte // tun read buffer
+	tunWriteBuf chan []byte // tun write buffer
 }
 
-func NewProxy(uuid uint32) *Proxy {
-	return &Proxy{
+func NewProxy(c config.Office, uuid uint32) *Proxy {
+	var o = &Proxy{
 		UUID:        uuid,
-		readBuffer:  make(chan []byte, 1024),
-		writeBuffer: make(chan []byte, 1024),
-		apps:        make(chan *tunnel.App, 1024),
+		tunReadBuf:  make(chan []byte, 1024),
+		tunWriteBuf: make(chan []byte, 1024),
+		o2Gw:        tunnel.NewOffice2Gw(uuid, c.GW),
 	}
+
+	return o
 }
 
-func (p *Proxy) Run() {
-	var err error
+func (p *Proxy) Run(pctx context.Context) {
 
-	p.o2Gw, err = tunnel.NewOfficeTunnel(p.UUID)
-	if err != nil {
-		p.Cancle()
+	ctx, cancle := context.WithCancel(pctx)
+	p.cancle = cancle
+
+	if intf, err := tuntap.Open(
+		net.IPv4(4, 4, 4, 4),
+		net.IPv4(0, 0, 0, 0),
+		net.IPv4(255, 255, 255, 0),
+	); err != nil {
 		return
-	}
-	defer p.o2Gw.CloseConn()
-
-	p.tun, err = tuntap.Open(net.IPv4(4, 4, 4, 4), net.IPv4(0, 0, 0, 0), net.IPv4(255, 255, 255, 0))
-	if err != nil {
-		p.Cancle()
-		return
+	} else {
+		p.tun = intf
 	}
 
+	go p.o2Gw.Run(ctx)
 	// Read from tun
-	go p.TunRead()
+	go p.tun.Read(p.tunReadBuf)
+	go p.tun.Write(p.tunWriteBuf)
+	go p.exchangeIn()
+	go p.exchangeOut()
 
-	// Locate to app
-	go p.AppLocate()
+	<-ctx.Done()
+}
 
+func (p *Proxy) exchangeIn() {
 	for {
 		select {
-		case app := <-p.apps:
-			// Read from tunnel
-			go p.TunnelRead(app)
-			// Write to tunnel
-			go p.TunnelWrite(app)
+		case in := <-p.tunReadBuf:
+			p.o2Gw.DataIn <- network.Parse(in)
 		}
 	}
 }
 
-// tun read -> readBuffer
-func (p *Proxy) TunRead() {
-	if err := p.tun.Read(p.readBuffer); err != nil {
-		log.Log.Errorw("[Read Tun]", "msg", err, "obj", "")
-		p.Cancle()
-		return
-	}
-}
-
-// writeBuffer -> tun write
-func (p *Proxy) TunWrite() {
-
-}
-
-// oa receive -> writeBuffer
-func (p *Proxy) TunnelRead(app *tunnel.App) {
-	for {
-		resp, err := app.Stream.Recv()
-		if err != nil {
-			if err == io.EOF {
-				log.Log.Info(app.Code, "[EOF]")
-			} else {
-				log.Log.Errorw("[Grpc Recv]", "msg", err, "obj", app.Code)
-			}
-			app.Stop()
-			break
-		}
-		p.writeBuffer <- resp.Data
-	}
-}
-
-// readBuffer -> oa send
-func (p *Proxy) TunnelWrite(app *tunnel.App) {
+func (p *Proxy) exchangeOut() {
 	for {
 		select {
-		case <-app.Keepalive.C:
-			log.Log.Info(app.Code, "[timeout]")
-			app.Stop()
-		case req := <-app.ReqChan:
-			log.Log.Info(app.Code, "[write chan]")
-			req.UUID = p.UUID
-			app.Stream.Send(req)
-			app.Keepalive.Reset(time.Second * 500)
-		}
-	}
-}
-
-func (p *Proxy) AppLocate() {
-	for {
-		select {
-		case data := <-p.readBuffer:
-			code, req := network.Parse(data)
-			app, new := p.o2Gw.GetApp(code)
-			if new {
-				log.Log.Info(code, "[new app]")
-				p.apps <- app
-			}
-			app.ReqChan <- req
+		case out := <-p.o2Gw.DataOut:
+			p.tunWriteBuf <- out.Data
 		}
 	}
 }

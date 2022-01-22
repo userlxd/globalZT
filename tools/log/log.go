@@ -11,9 +11,9 @@ import (
 
 var Log *zap.SugaredLogger
 
-func init() {
+func Init(c config.LOG) {
 
-	if config.Config.Mode == "dev" {
+	if c.Mode == "dev" {
 		log, err := zap.NewDevelopment()
 		if err != nil {
 			println("Logger Init Faild! Exit...")
@@ -29,7 +29,7 @@ func init() {
 		encoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
 
 		lumberJackLogger := &lumberjack.Logger{
-			Filename:   config.Config.LogFile,
+			Filename:   c.LogFile,
 			MaxSize:    100,
 			MaxBackups: 30,
 			MaxAge:     30,

@@ -2,117 +2,142 @@ package tunnel
 
 import (
 	"context"
-	"errors"
+	"globalZT/pkg/auth"
+	"globalZT/tools/config"
 	"globalZT/tools/log"
-	"sync"
-	"sync/atomic"
+	"io"
 	"time"
 
+	"go.uber.org/atomic"
 	"google.golang.org/grpc"
 )
 
-var priorityMap = map[uint]uint{
-	0: 1,
-	1: 10,
-	2: 100,
-	3: 1000,
+type Office2Gw struct {
+	Host   string           // server address
+	UUID   uint32           // device UUID
+	User   string           // user name
+	conn   *grpc.ClientConn // grpc conn
+	client Office2GwClient  // grpc client
+	jwt    *auth.JwtInfo    // jwth auth info
+
+	// Status Signal
+	loop   *atomic.Bool       // control recv
+	daemon chan struct{}      // exit signal
+	Logout chan struct{}      // logout signal
+	Cancle context.CancelFunc // cancle when exit
+
+	// Data
+	dataClient Office2Gw_DataClient // grpc stream
+	DataOut    chan *Out            // in queue
+	DataIn     chan *In             // out queue
 }
 
-type App struct {
-	context.Context
-	cancle      context.CancelFunc   //
-	Keepalive   *time.Timer          //
-	Code        string               // Code
-	Concurrency uint                 // QOS
-	Stream      Office2Gw_DataClient // grpc stream
-	ReqChan     chan *OfficeReq      // req chan
-	Office      *Office              // office
-}
+func NewOffice2Gw(UUID uint32, c config.GW) *Office2Gw {
 
-type Office struct {
-	sync.RWMutex // lock
-	host         string
-	UUID         uint32           // device UUID
-	active       uint32           // active code
-	conn         *grpc.ClientConn // grpc conn
-	client       Office2GwClient  // grpc client
-	Apps         map[string]*App  // app conn pool
-}
-
-func NewOfficeTunnel(UUID uint32) (*Office, error) {
-
-	var err error
-	var office = &Office{
-		UUID: UUID,
-		host: "gw.globalzt.com:31580", // todo 使用resolve解决gw loadblance
-		Apps: map[string]*App{},
+	return &Office2Gw{
+		Host:    c.IP + ":" + c.PORT,
+		UUID:    UUID,
+		loop:    atomic.NewBool(false),
+		daemon:  make(chan struct{}, 1),
+		Logout:  make(chan struct{}, 1),
+		DataIn:  make(chan *In, 100),
+		DataOut: make(chan *Out, 100),
 	}
-
-	conn, err := grpc.Dial(office.host, grpc.WithInsecure())
-	if err != nil {
-		log.Log.Error("[New Office App Grpc Conn Error]", "msg", err, "obj", office.host)
-		return office, err
-	}
-
-	office.conn = conn
-	office.client = NewOffice2GwClient(conn)
-
-	atomic.CompareAndSwapUint32(&office.active, 0, 1)
-	return office, nil
 }
 
-func (o *Office) CloseConn() {
+// close by command
+func (o *Office2Gw) Close() {
+	// break loop
+	o.loop.Store(false)
+	// close connection
 	o.conn.Close()
+	// cancle run
+	o.Cancle()
 }
 
-func (o *Office) GetApp(code string) (*App, bool) {
-	var new = false
+// close by loop
+// awake daemon to reconnect
+func (o *Office2Gw) close() {
+	// break loop
+	o.loop.Store(false)
+	// send exit signal
+	o.daemon <- struct{}{}
+}
 
-	o.RLock()
-	app, ok := o.Apps[code]
-	o.RUnlock()
-	if !ok {
-		var err error
-		app, err = o.initApp(code)
-		if err != nil {
-			return app, new
+func (o *Office2Gw) connect(ctx context.Context) {
+	if conn, err := grpc.Dial(o.Host, grpc.WithInsecure()); err == nil {
+		o.conn = conn
+	} else {
+		log.Log.Error("[NewOfficeTunnel]", "msg", err, "obj", o.Host)
+		return
+	}
+
+	o.client = NewOffice2GwClient(o.conn)
+
+	// set data client
+	if stream, err := o.client.Data(ctx); err == nil {
+		o.dataClient = stream
+	} else {
+		log.Log.Error("[NewDataClient]", "msg", err)
+		return
+	}
+}
+
+func (o *Office2Gw) Run(pctx context.Context) {
+
+	ctx, cacnle := context.WithCancel(pctx)
+	o.Cancle = cacnle
+
+	o.daemon <- struct{}{}
+	go func() {
+		for {
+			select {
+			case <-o.daemon:
+				o.Daemon(ctx)
+			}
 		}
-		new = true
-		o.Lock()
-		o.Apps[code] = app
-		o.Unlock()
-	}
-	return app, new
+	}()
+	go o.loopSend()
+	go o.loopRecv()
+
+	<-ctx.Done()
 }
 
-func (o *Office) initApp(code string) (*App, error) {
-
-	if atomic.LoadUint32(&o.active) == 0 {
-		return nil, errors.New("out of service")
-	}
-
-	var err error
-	var oa = &App{
-		Code:      code,
-		Office:    o,
-		Keepalive: time.NewTimer(time.Second * 500),
-	}
-
-	oa.Stream, err = o.client.Data(context.Background())
-	if err != nil {
-		log.Log.Errorw("[New Office App Grpc Stream Error]", "msg", err, "obj", o.host)
-		return oa, err
-	}
-
-	oa.ReqChan = make(chan *OfficeReq, 1)
-
-	return oa, nil
+func (o *Office2Gw) Daemon(ctx context.Context) {
+	o.connect(ctx)
+	o.loop.Store(true)
 }
 
-func (oa *App) Stop() {
+func (o *Office2Gw) loopSend() {
+	for {
+		if o.loop.Load() {
+			select {
+			case in := <-o.DataIn:
+				if err := o.dataClient.Send(in); err != nil {
+					log.Log.Error("[DataClientSend]", "msg", err)
+					o.close()
+				}
+			}
+		} else {
+			time.Sleep(time.Second)
+		}
+	}
+}
 
-	oa.Office.Lock()
-	delete(oa.Office.Apps, oa.Code)
-	oa.Office.Unlock()
-	oa.cancle()
+func (o *Office2Gw) loopRecv() {
+	for {
+		if o.loop.Load() {
+			out, err := o.dataClient.Recv()
+			if err == io.EOF {
+				o.close()
+			}
+			if err != nil {
+				log.Log.Error("[DataClientRecv]", "msg", err)
+				o.close()
+			}
+			o.DataOut <- out
+		} else {
+			time.Sleep(time.Second)
+		}
+	}
 }

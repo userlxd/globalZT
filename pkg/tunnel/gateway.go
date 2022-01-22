@@ -9,8 +9,8 @@ import (
 )
 
 type Gateway struct {
-	listener net.Listener
-	server   *grpc.Server
+	listener net.Listener // net lisnter
+	server   *grpc.Server // grpc server
 }
 
 func NewGwTunnel() *Gateway {

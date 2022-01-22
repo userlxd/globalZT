@@ -1,13 +1,6 @@
 package config
 
-var Config config
-
-type config struct {
+type LOG struct {
 	Mode    string
 	LogFile string
-}
-
-func init() {
-	Config = config{Mode: "dev"}
-	Config.loadFlag()
 }

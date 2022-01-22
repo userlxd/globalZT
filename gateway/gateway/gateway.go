@@ -1,36 +1,34 @@
-package office
+package gateway
 
 import (
 	"context"
-	"globalZT/office/proxy"
+	"globalZT/gateway/proxy"
 	"globalZT/tools/config"
 	"globalZT/tools/log"
 )
 
-var office Office
+var gateway Gateway
 
-// 1.web todo
-// 2.proxy now
-type Office struct {
+type Gateway struct {
 	cancle context.CancelFunc
 	UUID   uint32
-	proxy  *proxy.Proxy
+	proxy  proxy.Proxy
 }
 
 func init() {
 	var uuid uint32 = 123
 
 	// load config
-	var c config.Office
+	var c config.Gateway
 	c.Load()
 
 	// log tools
 	log.Init(c.LOG)
 
-	// office
-	office = Office{
+	// gateway
+	gateway = Gateway{
 		UUID:  uuid,
-		proxy: proxy.NewProxy(c, uuid),
+		proxy: *proxy.NewProxy(uuid),
 	}
 }
 
@@ -40,9 +38,9 @@ func Run() {
 	defer log.Log.Info("quit")
 
 	ctx, cancle := context.WithCancel(context.Background())
-	office.cancle = cancle
+	gateway.cancle = cancle
 
-	office.proxy.Run(ctx)
+	go gateway.proxy.Run(ctx)
 
 	<-ctx.Done()
 }
